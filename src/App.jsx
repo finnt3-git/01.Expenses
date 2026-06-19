@@ -55,15 +55,21 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [editNames, setEditNames] = useState(false);
   const [tab, setTab] = useState("balance");
+  const [syncing, setSyncing] = useState(false);
+  const [lastSync, setLastSync] = useState(null);
+
+  const applySnapshot = (d) => {
+    if (d.expenses) setExpenses(d.expenses);
+    if (d.names) setNames(d.names);
+    if (d.settlements) setSettlements(d.settlements);
+    if (d.rates) setRates(d.rates);
+    setLastSync(new Date());
+  };
 
   useEffect(() => {
     // Subscribe to real-time updates from Firestore.
-    const unsub = onSnapshot(DATA_REF, async (snap) => {
-      const d = snap.data() || {};
-      if (d.expenses) setExpenses(d.expenses);
-      if (d.names) setNames(d.names);
-      if (d.settlements) setSettlements(d.settlements);
-      if (d.rates) setRates(d.rates);
+    const unsub = onSnapshot(DATA_REF, (snap) => {
+      applySnapshot(snap.data() || {});
       setLoading(false);
     }, (err) => {
       console.error("Firestore error", err);
@@ -75,6 +81,17 @@ export default function App() {
 
     return unsub;
   }, []);
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const snap = await getDoc(DATA_REF);
+      applySnapshot(snap.data() || {});
+    } catch (e) {
+      console.error("sync failed", e);
+    }
+    setSyncing(false);
+  };
 
   const refreshRates = async () => {
     setRefreshing(true);
@@ -292,6 +309,12 @@ export default function App() {
       {showSettle && <SettleForm names={names} balance={balance} rates={rates} onClose={() => setShowSettle(false)} onSave={addSettlement} />}
       {editNames && <NamesForm names={names} onClose={() => setEditNames(false)} onSave={(n) => { setNames(n); save({ names: n }); setEditNames(false); }} />}
 
+      <div style={S.syncBar}>
+        <button className="ex-btn" style={S.miniBtn} onClick={syncNow} disabled={syncing}>
+          <RefreshCw size={13} className={syncing ? "spin" : ""} /> {syncing ? "Syncing…" : "Sync now"}
+        </button>
+        {lastSync && <span style={{ fontSize: 11, color: "#b3aea3" }}>Last synced {lastSync.toLocaleTimeString()}</span>}
+      </div>
       <p style={S.footnote}>Synced in real-time between you both.</p>
     </div>
   );
@@ -477,6 +500,7 @@ const S = {
   settleDot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, background: "#e6eef3", color: "#4a7a99", display: "flex", alignItems: "center", justifyContent: "center" },
   sectLabel: { fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "#a39e94", fontWeight: 700, margin: "16px 0 4px", paddingTop: 12, borderTop: "1px solid #f1ede4" },
   ghostBtn: { display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 10, border: "1px solid #ddd6c9", background: "#fff", color: "#5a554c", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  syncBar: { display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 6 },
   footnote: { textAlign: "center", fontSize: 11.5, color: "#b3aea3", marginTop: 4 },
   overlay: { position: "fixed", inset: 0, background: "rgba(40,35,25,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 },
   modal: { background: "#faf8f3", width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 22, maxHeight: "92vh", overflowY: "auto" },
