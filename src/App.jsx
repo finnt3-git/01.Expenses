@@ -43,7 +43,7 @@ const CAT_COLOUR = { "Groceries": "#5b8c6e", "Rent & bills": "#c97b4a", "Eating 
 const fmtCad = (n) => "CA$" + (Math.round(n * 100) / 100).toFixed(2);
 const fmtCur = (n, cur) => SYM[cur] + (Math.round(n * 100) / 100).toFixed(2);
 
-export default function App() {
+export default function App({ user, onSignOut }) {
   const [loading, setLoading] = useState(true);
   const [expenses, setExpenses] = useState([]);
   const [names, setNames] = useState({ a: "Me", b: "Partner" });
@@ -191,7 +191,10 @@ export default function App() {
           <div style={S.kicker}>Shared expenses</div>
           <h1 style={S.h1}>{names.a} &amp; {names.b}</h1>
         </div>
-        <button className="ex-btn" style={S.ghostBtn} onClick={() => setEditNames(true)}><Users size={15} /> Names</button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="ex-btn" style={S.ghostBtn} onClick={() => setEditNames(true)}><Users size={15} /> Names</button>
+          <button className="ex-btn" style={S.ghostBtn} onClick={onSignOut} title={user?.email}>Sign out</button>
+        </div>
       </header>
 
       <div style={{ ...S.card, ...S.banner }}>
