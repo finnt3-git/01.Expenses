@@ -67,7 +67,7 @@ function LoginScreen() {
         setSuccess("Password reset email sent — check your inbox.");
       }
     } catch (err) {
-      setError(friendlyError(err.code));
+      setError(friendlyError(err.code) + " (code: " + err.code + ")");
     }
     setLoading(false);
   };
