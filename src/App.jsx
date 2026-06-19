@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Plus, Trash2, Download, Users, Receipt, Scale, X, Pencil, RefreshCw, ArrowRight, HandCoins } from "lucide-react";
+import { db } from "./firebase";
+import { doc, onSnapshot, setDoc, getDoc } from "firebase/firestore";
 
-// ---- Persistent storage (shared so both partners see the same data) ----
-const STORE_KEY = "expenses:all";
-const NAMES_KEY = "expenses:names";
-const RATES_KEY = "expenses:rates";
-const SETTLE_KEY = "expenses:settlements";
+// Single Firestore document holds all shared state for the couple.
+const DATA_REF = doc(db, "shared", "data");
 
 // Currencies. Everything is converted to CAD under the hood so the balance
 // stays correct no matter what currency an expense was entered in.
@@ -16,18 +15,8 @@ const SYM = { CAD: "CA$", USD: "US$", EUR: "€" };
 // Seeded from mid-June 2026 mid-market rates; used only if the live fetch fails.
 const FALLBACK_RATES = { CAD: 1, USD: 1.389, EUR: 1.62, asOf: "14 Jun 2026 (offline rates)" };
 
-async function loadState() {
-  let expenses = [], names = { a: "Me", b: "Partner" }, rates = null, settlements = [];
-  try { const v = localStorage.getItem(STORE_KEY); if (v) expenses = JSON.parse(v); } catch (e) {}
-  try { const v = localStorage.getItem(NAMES_KEY); if (v) names = JSON.parse(v); } catch (e) {}
-  try { const v = localStorage.getItem(RATES_KEY); if (v) rates = JSON.parse(v); } catch (e) {}
-  try { const v = localStorage.getItem(SETTLE_KEY); if (v) settlements = JSON.parse(v); } catch (e) {}
-  return { expenses, names, rates, settlements };
-}
-
-const save = (key, val) => {
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { console.error("save failed", e); }
-};
+// Merge partial fields into the Firestore document.
+const save = (fields) => setDoc(DATA_REF, fields, { merge: true }).catch((e) => console.error("save failed", e));
 
 // Pull live rates with CAD as the base, keep only the three we use.
 async function fetchRates() {
@@ -66,29 +55,54 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [editNames, setEditNames] = useState(false);
   const [tab, setTab] = useState("balance");
+  const [syncing, setSyncing] = useState(false);
+  const [lastSync, setLastSync] = useState(null);
+
+  const applySnapshot = (d) => {
+    if (d.expenses) setExpenses(d.expenses);
+    if (d.names) setNames(d.names);
+    if (d.settlements) setSettlements(d.settlements);
+    if (d.rates) setRates(d.rates);
+    setLastSync(new Date());
+  };
 
   useEffect(() => {
-    loadState().then(async ({ expenses, names, rates, settlements }) => {
-      setExpenses(expenses);
-      setNames(names);
-      setSettlements(settlements);
-      if (rates) setRates(rates);
+    // Subscribe to real-time updates from Firestore.
+    const unsub = onSnapshot(DATA_REF, (snap) => {
+      applySnapshot(snap.data() || {});
       setLoading(false);
-      const live = await fetchRates();
-      if (live) { setRates(live); save(RATES_KEY, live); }
+    }, (err) => {
+      console.error("Firestore error", err);
+      setLoading(false);
     });
+
+    // Fetch live exchange rates once on mount.
+    fetchRates().then((live) => { if (live) save({ rates: live }); });
+
+    return unsub;
   }, []);
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const snap = await getDoc(DATA_REF);
+      applySnapshot(snap.data() || {});
+    } catch (e) {
+      console.error("sync failed", e);
+    }
+    setSyncing(false);
+  };
 
   const refreshRates = async () => {
     setRefreshing(true);
     const live = await fetchRates();
-    if (live) { setRates(live); save(RATES_KEY, live); }
+    if (live) save({ rates: live });
     setRefreshing(false);
   };
 
   const toCad = (amount, cur) => (Number(amount) || 0) * (rates[cur] || 1);
 
-  const persist = (next) => { setExpenses(next); save(STORE_KEY, next); };
+  const persist = (next) => { setExpenses(next); save({ expenses: next }); };
 
   const addOrUpdate = (exp) => {
     if (exp.id) persist(expenses.map((e) => (e.id === exp.id ? exp : e)));
@@ -97,7 +111,7 @@ export default function App() {
   };
   const remove = (id) => persist(expenses.filter((e) => e.id !== id));
 
-  const persistSettle = (next) => { setSettlements(next); save(SETTLE_KEY, next); };
+  const persistSettle = (next) => { setSettlements(next); save({ settlements: next }); };
   const addSettlement = (s) => {
     persistSettle([{ ...s, id: Date.now().toString(), created: Date.now() }, ...settlements]);
     setShowSettle(false);
@@ -293,9 +307,15 @@ export default function App() {
 
       {showForm && <ExpenseForm names={names} rates={rates} initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSave={addOrUpdate} />}
       {showSettle && <SettleForm names={names} balance={balance} rates={rates} onClose={() => setShowSettle(false)} onSave={addSettlement} />}
-      {editNames && <NamesForm names={names} onClose={() => setEditNames(false)} onSave={(n) => { setNames(n); save(NAMES_KEY, n); setEditNames(false); }} />}
+      {editNames && <NamesForm names={names} onClose={() => setEditNames(false)} onSave={(n) => { setNames(n); save({ names: n }); setEditNames(false); }} />}
 
-      <p style={S.footnote}>Saved automatically in your browser.</p>
+      <div style={S.syncBar}>
+        <button className="ex-btn" style={S.miniBtn} onClick={syncNow} disabled={syncing}>
+          <RefreshCw size={13} className={syncing ? "spin" : ""} /> {syncing ? "Syncing…" : "Sync now"}
+        </button>
+        {lastSync && <span style={{ fontSize: 11, color: "#b3aea3" }}>Last synced {lastSync.toLocaleTimeString()}</span>}
+      </div>
+      <p style={S.footnote}>Synced in real-time between you both.</p>
     </div>
   );
 }
@@ -480,6 +500,7 @@ const S = {
   settleDot: { width: 22, height: 22, borderRadius: "50%", flexShrink: 0, background: "#e6eef3", color: "#4a7a99", display: "flex", alignItems: "center", justifyContent: "center" },
   sectLabel: { fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "#a39e94", fontWeight: 700, margin: "16px 0 4px", paddingTop: 12, borderTop: "1px solid #f1ede4" },
   ghostBtn: { display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 10, border: "1px solid #ddd6c9", background: "#fff", color: "#5a554c", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  syncBar: { display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 6 },
   footnote: { textAlign: "center", fontSize: 11.5, color: "#b3aea3", marginTop: 4 },
   overlay: { position: "fixed", inset: 0, background: "rgba(40,35,25,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 },
   modal: { background: "#faf8f3", width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 22, maxHeight: "92vh", overflowY: "auto" },
