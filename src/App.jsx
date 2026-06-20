@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Plus, Trash2, Download, Users, Receipt, Scale, X, Pencil, RefreshCw, ArrowRight, HandCoins } from "lucide-react";
+import { Plus, Trash2, Download, Users, Receipt, Scale, X, Pencil, RefreshCw, ArrowRight, HandCoins, Shield } from "lucide-react";
 import { db } from "./firebase";
 import { doc, onSnapshot, setDoc, getDoc } from "firebase/firestore";
+import AdminPanel, { isAdmin } from "./AdminPanel.jsx";
 
 // Single Firestore document holds all shared state for the couple.
 const DATA_REF = doc(db, "shared", "data");
@@ -57,6 +58,7 @@ export default function App({ user, onSignOut }) {
   const [tab, setTab] = useState("balance");
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const applySnapshot = (d) => {
     if (d.expenses) setExpenses(d.expenses);
@@ -193,6 +195,7 @@ export default function App({ user, onSignOut }) {
         </div>
         <div style={{ display: "flex", gap: 6 }}>
           <button className="ex-btn" style={S.ghostBtn} onClick={() => setEditNames(true)}><Users size={15} /> Names</button>
+          {isAdmin(user) && <button className="ex-btn" style={S.ghostBtn} onClick={() => setShowAdmin(true)} title="Manage users"><Shield size={15} /></button>}
           <button className="ex-btn" style={S.ghostBtn} onClick={onSignOut} title={user?.email}>Sign out</button>
         </div>
       </header>
@@ -311,6 +314,7 @@ export default function App({ user, onSignOut }) {
       {showForm && <ExpenseForm names={names} rates={rates} initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSave={addOrUpdate} />}
       {showSettle && <SettleForm names={names} balance={balance} rates={rates} onClose={() => setShowSettle(false)} onSave={addSettlement} />}
       {editNames && <NamesForm names={names} onClose={() => setEditNames(false)} onSave={(n) => { setNames(n); save({ names: n }); setEditNames(false); }} />}
+      {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} />}
 
       <div style={S.syncBar}>
         <button className="ex-btn" style={S.miniBtn} onClick={syncNow} disabled={syncing}>
