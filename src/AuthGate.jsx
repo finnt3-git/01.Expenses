@@ -8,6 +8,7 @@ import {
   signOut,
 } from "firebase/auth";
 import App from "./App.jsx";
+import { checkAllowed } from "./AdminPanel.jsx";
 
 const S = {
   shell: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f5f2ec", fontFamily: "'Segoe UI', system-ui, sans-serif", padding: 16 },
@@ -24,10 +25,20 @@ const S = {
 };
 
 export default function AuthGate() {
-  const [user, setUser] = useState(undefined); // undefined = loading
+  const [user, setUser] = useState(undefined);
 
   useEffect(() => {
-    return onAuthStateChanged(auth, (u) => setUser(u));
+    return onAuthStateChanged(auth, async (u) => {
+      if (!u) { setUser(null); return; }
+      const allowed = await checkAllowed(u);
+      if (!allowed) {
+        await signOut(auth);
+        setUser(null);
+        alert("Your account is not authorised. Please ask the admin to add your email first.");
+        return;
+      }
+      setUser(u);
+    });
   }, []);
 
   if (user === undefined) {
@@ -44,7 +55,7 @@ export default function AuthGate() {
 }
 
 function LoginScreen() {
-  const [mode, setMode] = useState("login"); // "login" | "register" | "reset"
+  const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -67,7 +78,7 @@ function LoginScreen() {
         setSuccess("Password reset email sent — check your inbox.");
       }
     } catch (err) {
-      setError(friendlyError(err.code) + " (code: " + err.code + ")");
+      setError(friendlyError(err.code));
     }
     setLoading(false);
   };
@@ -91,7 +102,6 @@ function LoginScreen() {
             required
             autoFocus
           />
-
           {mode !== "reset" && (
             <>
               <label style={S.lbl}>Password</label>
@@ -106,10 +116,8 @@ function LoginScreen() {
               />
             </>
           )}
-
           {error && <div style={S.error}>{error}</div>}
           {success && <div style={S.success}>{success}</div>}
-
           <button style={S.btn} disabled={loading}>
             {loading ? "Please wait…" : mode === "login" ? "Sign in" : mode === "register" ? "Create account" : "Send reset email"}
           </button>
@@ -125,9 +133,7 @@ function LoginScreen() {
             </>
           )}
           {mode !== "login" && (
-            <>
-              <button style={S.link} onClick={() => { setMode("login"); clearMessages(); }}>Back to sign in</button>
-            </>
+            <button style={S.link} onClick={() => { setMode("login"); clearMessages(); }}>Back to sign in</button>
           )}
         </div>
       </div>
