@@ -4,9 +4,6 @@ import { db } from "./firebase";
 import { doc, onSnapshot, setDoc, getDoc } from "firebase/firestore";
 import AdminPanel, { isAdmin } from "./AdminPanel.jsx";
 
-// Single Firestore document holds all shared state for the couple.
-const DATA_REF = doc(db, "shared", "data");
-
 // Currencies. Everything is converted to CAD under the hood so the balance
 // stays correct no matter what currency an expense was entered in.
 const CURRENCIES = ["CAD", "USD", "EUR"];
@@ -16,8 +13,12 @@ const SYM = { CAD: "CA$", USD: "US$", EUR: "€" };
 // Seeded from mid-June 2026 mid-market rates; used only if the live fetch fails.
 const FALLBACK_RATES = { CAD: 1, USD: 1.389, EUR: 1.62, asOf: "14 Jun 2026 (offline rates)" };
 
-// Merge partial fields into the Firestore document.
-const save = (fields) => setDoc(DATA_REF, fields, { merge: true }).catch((e) => console.error("save failed", e));
+// Merge partial fields into the Firestore document (roomRef set inside App).
+let _roomRef = null;
+const save = (fields) => {
+  if (!_roomRef) return;
+  setDoc(_roomRef, fields, { merge: true }).catch((e) => console.error("save failed", e));
+};
 
 // Pull live rates with CAD as the base, keep only the three we use.
 async function fetchRates() {
@@ -44,7 +45,7 @@ const CAT_COLOUR = { "Groceries": "#5b8c6e", "Rent & bills": "#c97b4a", "Eating 
 const fmtCad = (n) => "CA$" + (Math.round(n * 100) / 100).toFixed(2);
 const fmtCur = (n, cur) => SYM[cur] + (Math.round(n * 100) / 100).toFixed(2);
 
-export default function App({ user, onSignOut }) {
+export default function App({ user, onSignOut, roomId, roomData, onLeaveRoom }) {
   const [loading, setLoading] = useState(true);
   const [expenses, setExpenses] = useState([]);
   const [names, setNames] = useState({ a: "Me", b: "Partner" });
@@ -59,18 +60,26 @@ export default function App({ user, onSignOut }) {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [roomName, setRoomName] = useState(roomData?.name || "");
+  const [roomType, setRoomType] = useState(roomData?.type || "duo");
 
   const applySnapshot = (d) => {
     if (d.expenses) setExpenses(d.expenses);
     if (d.names) setNames(d.names);
     if (d.settlements) setSettlements(d.settlements);
     if (d.rates) setRates(d.rates);
+    if (d.name) setRoomName(d.name);
+    if (d.type) setRoomType(d.type);
     setLastSync(new Date());
   };
 
   useEffect(() => {
+    // Point the module-level save helper at the current room.
+    const roomRef = doc(db, "rooms", roomId);
+    _roomRef = roomRef;
+
     // Subscribe to real-time updates from Firestore.
-    const unsub = onSnapshot(DATA_REF, (snap) => {
+    const unsub = onSnapshot(roomRef, (snap) => {
       applySnapshot(snap.data() || {});
       setLoading(false);
     }, (err) => {
@@ -81,13 +90,13 @@ export default function App({ user, onSignOut }) {
     // Fetch live exchange rates once on mount.
     fetchRates().then((live) => { if (live) save({ rates: live }); });
 
-    return unsub;
-  }, []);
+    return () => { unsub(); _roomRef = null; };
+  }, [roomId]);
 
   const syncNow = async () => {
     setSyncing(true);
     try {
-      const snap = await getDoc(DATA_REF);
+      const snap = await getDoc(doc(db, "rooms", roomId));
       applySnapshot(snap.data() || {});
     } catch (e) {
       console.error("sync failed", e);
@@ -189,11 +198,16 @@ export default function App({ user, onSignOut }) {
       `}</style>
 
       <header style={S.header}>
-        <div>
-          <div style={S.kicker}>Shared expenses</div>
-          <h1 style={S.h1}>{names.a} &amp; {names.b}</h1>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <button className="ex-btn" style={{ ...S.ghostBtn, flexShrink: 0 }} onClick={onLeaveRoom}>← Back</button>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <h1 style={S.h1}>{roomName || "Room"}</h1>
+              <span style={S.typeBadge}>{roomType}</span>
+            </div>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
           <button className="ex-btn" style={S.ghostBtn} onClick={() => setEditNames(true)}><Users size={15} /> Names</button>
           {isAdmin(user) && <button className="ex-btn" style={S.ghostBtn} onClick={() => setShowAdmin(true)} title="Manage users"><Shield size={15} /></button>}
           <button className="ex-btn" style={S.ghostBtn} onClick={onSignOut} title={user?.email}>Sign out</button>
@@ -203,8 +217,17 @@ export default function App({ user, onSignOut }) {
       <div style={{ ...S.card, ...S.banner }}>
         <Scale size={26} style={{ opacity: 0.5 }} />
         <div>
-          <div style={S.bannerLabel}>{owes}</div>
-          <div style={S.bannerAmount}>{Math.abs(balance) < 0.005 ? "Nothing owed" : fmtCad(Math.abs(balance))}</div>
+          {roomType === "single" ? (
+            <>
+              <div style={S.bannerLabel}>Total spent</div>
+              <div style={S.bannerAmount}>{fmtCad(totals.total)}</div>
+            </>
+          ) : (
+            <>
+              <div style={S.bannerLabel}>{owes}</div>
+              <div style={S.bannerAmount}>{Math.abs(balance) < 0.005 ? "Nothing owed" : fmtCad(Math.abs(balance))}</div>
+            </>
+          )}
         </div>
       </div>
 
@@ -216,13 +239,19 @@ export default function App({ user, onSignOut }) {
 
       {tab === "balance" && (
         <div style={S.card}>
-          <Stat label={`${names.a} paid`} value={fmtCad(totals.paidA)} />
-          <Stat label={`${names.b} paid`} value={fmtCad(totals.paidB)} />
-          <Stat label="Total spent together" value={fmtCad(totals.total)} strong />
-          <div style={S.owedBlock}>
-            <OwedLine name={names.a} net={balance} />
-            <OwedLine name={names.b} net={-balance} />
-          </div>
+          {roomType === "single" ? (
+            <Stat label="Total spent" value={fmtCad(totals.total)} strong />
+          ) : (
+            <>
+              <Stat label={`${names.a} paid`} value={fmtCad(totals.paidA)} />
+              <Stat label={`${names.b} paid`} value={fmtCad(totals.paidB)} />
+              <Stat label="Total spent together" value={fmtCad(totals.total)} strong />
+              <div style={S.owedBlock}>
+                <OwedLine name={names.a} net={balance} />
+                <OwedLine name={names.b} net={-balance} />
+              </div>
+            </>
+          )}
           <div style={S.rateBar}>
             <span style={{ color: "#9a958c", fontSize: 12 }}>
               US$1 = {fmtCad(rates.USD)} · €1 = {fmtCad(rates.EUR)}<br />
@@ -308,7 +337,9 @@ export default function App({ user, onSignOut }) {
 
       <div style={S.btnRow}>
         <button className="ex-btn" style={S.fab} onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={18} /> Add expense</button>
-        <button className="ex-btn" style={S.settleBtn} onClick={() => setShowSettle(true)}><HandCoins size={17} /> Settle up</button>
+        {roomType !== "single" && (
+          <button className="ex-btn" style={S.settleBtn} onClick={() => setShowSettle(true)}><HandCoins size={17} /> Settle up</button>
+        )}
       </div>
 
       {showForm && <ExpenseForm names={names} rates={rates} initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSave={addOrUpdate} />}
@@ -509,6 +540,7 @@ const S = {
   ghostBtn: { display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 10, border: "1px solid #ddd6c9", background: "#fff", color: "#5a554c", fontSize: 13, fontWeight: 600, cursor: "pointer" },
   syncBar: { display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 6 },
   footnote: { textAlign: "center", fontSize: 11.5, color: "#b3aea3", marginTop: 4 },
+  typeBadge: { fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", background: "#ece7dd", color: "#7a756c", borderRadius: 6, padding: "2px 7px", verticalAlign: "middle" },
   overlay: { position: "fixed", inset: 0, background: "rgba(40,35,25,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 },
   modal: { background: "#faf8f3", width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 22, maxHeight: "92vh", overflowY: "auto" },
   modalHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },

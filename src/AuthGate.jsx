@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { auth } from "./firebase";
+import { auth, db } from "./firebase";
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -7,7 +7,10 @@ import {
   sendPasswordResetEmail,
   signOut,
 } from "firebase/auth";
+import { doc, setDoc, collection, query, where, getDocs, updateDoc, arrayUnion } from "firebase/firestore";
 import App from "./App.jsx";
+import Lobby from "./Lobby.jsx";
+import AdminPanel from "./AdminPanel.jsx";
 import { checkAllowed } from "./AdminPanel.jsx";
 
 const S = {
@@ -26,6 +29,8 @@ const S = {
 
 export default function AuthGate() {
   const [user, setUser] = useState(undefined);
+  const [currentRoom, setCurrentRoom] = useState(null); // { roomId, roomData }
+  const [showAdmin, setShowAdmin] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (u) => {
@@ -37,6 +42,9 @@ export default function AuthGate() {
         alert("Your account is not authorised. Please ask the admin to add your email first.");
         return;
       }
+      // Ensure user doc exists and resolve any pending room invites.
+      await ensureUserDoc(u);
+      await resolvePendingInvites(u);
       setUser(u);
     });
   }, []);
@@ -51,7 +59,54 @@ export default function AuthGate() {
 
   if (!user) return <LoginScreen />;
 
-  return <App user={user} onSignOut={() => signOut(auth)} />;
+  if (currentRoom) {
+    return (
+      <App
+        user={user}
+        onSignOut={() => signOut(auth)}
+        roomId={currentRoom.roomId}
+        roomData={currentRoom.roomData}
+        onLeaveRoom={() => setCurrentRoom(null)}
+      />
+    );
+  }
+
+  return (
+    <>
+      <Lobby
+        user={user}
+        onEnterRoom={(roomId, roomData) => setCurrentRoom({ roomId, roomData })}
+        onSignOut={() => signOut(auth)}
+        onAdmin={() => setShowAdmin(true)}
+      />
+      {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} />}
+    </>
+  );
+}
+
+// Create the user doc on first login so room lookups work.
+async function ensureUserDoc(u) {
+  try {
+    await setDoc(doc(db, "users", u.uid), { email: u.email }, { merge: true });
+  } catch (e) { /* ignore */ }
+}
+
+// If any rooms have this user's email in pendingInvites, add them as a member.
+async function resolvePendingInvites(u) {
+  try {
+    const q = query(collection(db, "rooms"), where("pendingInvites", "array-contains", u.email.toLowerCase()));
+    const snap = await getDocs(q);
+    await Promise.all(snap.docs.map(async (roomDoc) => {
+      const room = roomDoc.data();
+      const newMember = { uid: u.uid, email: u.email, displayName: u.email.split("@")[0] };
+      const updatedInvites = (room.pendingInvites || []).filter((e) => e !== u.email.toLowerCase());
+      await updateDoc(roomDoc.ref, {
+        members: arrayUnion(newMember),
+        pendingInvites: updatedInvites,
+      });
+      await setDoc(doc(db, "users", u.uid), { memberRooms: arrayUnion(roomDoc.id) }, { merge: true });
+    }));
+  } catch (e) { /* ignore */ }
 }
 
 function LoginScreen() {
